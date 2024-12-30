@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KaraOkay</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.0/css/bootstrap.min.css">
+    <style>
+        body {
+            background-color: #f8f9fa;
+        }
+        .queue-list {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+    </style>
+</head>
+<body>
+    <div class="container mt-5">
+        <h1 class="text-center">KaraOkay</h1>
+        <p class="text-center">Paste your YouTube karaoke video link and create a queue to sing along!</p>
+
+        <div class="row">
+            <div class="col-md-6 offset-md-3">
+                <!-- WebSocket Server Configuration -->
+                <div class="mb-3">
+                    <input type="text" id="wsServer" class="form-control mb-2" placeholder="Enter WebSocket server URL (e.g., wss://xxxx-xx-xx-xxx-xx.ngrok-free.app)">
+                    <button class="btn btn-success w-100" id="connectButton">Connect to Server</button>
+                </div>
+
+                <div class="input-group mb-3">
+                    <input type="text" id="youtubeLink" class="form-control" placeholder="Paste YouTube link here">
+                    <button class="btn btn-primary" id="addToQueue">Add to Queue</button>
+                </div>
+                <div id="connectionStatus" class="alert alert-warning">Not connected to server</div>
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="col-md-6 offset-md-3">
+                <h3>Queue</h3>
+                <ul class="list-group queue-list" id="queueList">
+                    <!-- Queued videos will appear here -->
+                </ul>
+            </div>
+        </div>
+
+        <div class="row mt-4">
+            <div class="col-md-8 offset-md-2">
+                <h3>Player</h3>
+                <div class="ratio ratio-16x9">
+                    <iframe id="youtubePlayer" src="" frameborder="0" allow="autoplay" allowfullscreen></iframe>
+                </div>
+                <div class="text-center mt-3">
+                    <button class="btn btn-secondary" id="nextButton">Next</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let socket;
+        let videoQueue = [];
+        const wsServerInput = document.getElementById('wsServer');
+        const connectButton = document.getElementById('connectButton');
+        const connectionStatus = document.getElementById('connectionStatus');
+        const youtubeLinkInput = document.getElementById('youtubeLink');
+        const addToQueueButton = document.getElementById('addToQueue');
+        const queueList = document.getElementById('queueList');
+        const youtubePlayer = document.getElementById('youtubePlayer');
+        const nextButton = document.getElementById('nextButton');
+
+        function connectWebSocket(serverUrl) {
+            // Close existing connection if any
+            if (socket) {
+                socket.close();
+            }
+
+            try {
+                socket = new WebSocket(serverUrl);
+
+                socket.onopen = () => {
+                    connectionStatus.className = 'alert alert-success';
+                    connectionStatus.textContent = 'Connected to server';
+                    // Enable inputs after successful connection
+                    youtubeLinkInput.disabled = false;
+                    addToQueueButton.disabled = false;
+                    nextButton.disabled = false;
+                };
+
+                socket.onclose = () => {
+                    connectionStatus.className = 'alert alert-danger';
+                    connectionStatus.textContent = 'Disconnected from server';
+                    // Disable inputs when disconnected
+                    youtubeLinkInput.disabled = true;
+                    addToQueueButton.disabled = true;
+                    nextButton.disabled = true;
+                };
+
+                socket.onerror = (error) => {
+                    connectionStatus.className = 'alert alert-danger';
+                    connectionStatus.textContent = 'Connection error. Please check the server URL.';
+                    console.error('WebSocket Error:', error);
+                };
+
+                socket.onmessage = (event) => {
+                    videoQueue = JSON.parse(event.data);
+                    updateQueueList();
+                    updatePlayer();
+                };
+            } catch (error) {
+                connectionStatus.className = 'alert alert-danger';
+                connectionStatus.textContent = 'Invalid WebSocket URL. Please check the format.';
+                console.error('Connection Error:', error);
+            }
+        }
+
+        function updatePlayer() {
+            if (videoQueue.length > 0) {
+                const videoId = videoQueue[0];
+                youtubePlayer.src = `https://www.youtube.com/embed/${videoId}?autoplay=1&enablejsapi=1`;
+            } else {
+                youtubePlayer.src = "";
+            }
+        }
+
+        function playNextVideo() {
+            if (videoQueue.length > 0 && socket?.readyState === WebSocket.OPEN) {
+                videoQueue.shift();
+                socket.send('next');
+                updateQueueList();
+                updatePlayer();
+            }
+        }
+
+        function updateQueueList() {
+            queueList.innerHTML = '';
+            videoQueue.forEach((videoId, index) => {
+                const listItem = document.createElement('li');
+                listItem.className = 'list-group-item d-flex justify-content-between align-items-center';
+                listItem.textContent = `https://youtu.be/${videoId}`;
+
+                const removeButton = document.createElement('button');
+                removeButton.className = 'btn btn-danger btn-sm';
+                removeButton.textContent = 'Remove';
+                removeButton.onclick = function () {
+                    if (socket?.readyState === WebSocket.OPEN) {
+                        videoQueue.splice(index, 1);
+                        socket.send('remove');
+                        updateQueueList();
+                        if (index === 0) {
+                            updatePlayer();
+                        }
+                    }
+                };
+
+                listItem.appendChild(removeButton);
+                queueList.appendChild(listItem);
+            });
+        }
+
+        function addToQueue() {
+            const youtubeLink = youtubeLinkInput.value.trim();
+            const videoIdMatch = youtubeLink.match(/(?:https?:\/\/)?(?:www\.)?youtube\.com\/watch\?v=([\w-]{11})|youtu\.be\/([\w-]{11})/);
+
+            if (videoIdMatch && socket?.readyState === WebSocket.OPEN) {
+                const videoId = videoIdMatch[1] || videoIdMatch[2];
+                videoQueue.push(videoId);
+                socket.send(videoId);
+                updateQueueList();
+
+                if (videoQueue.length === 1) {
+                    updatePlayer();
+                }
+
+                youtubeLinkInput.value = '';
+            } else if (!videoIdMatch) {
+                alert('Please enter a valid YouTube link!');
+            }
+        }
+
+        // Initialize buttons and inputs
+        youtubeLinkInput.disabled = true;
+        addToQueueButton.disabled = true;
+        nextButton.disabled = true;
+
+        // Event listeners
+        connectButton.addEventListener('click', () => {
+            const serverUrl = wsServerInput.value.trim();
+            if (serverUrl) {
+                connectWebSocket(serverUrl);
+            } else {
+                alert('Please enter a WebSocket server URL');
+            }
+        });
+        
+        addToQueueButton.addEventListener('click', addToQueue);
+        nextButton.addEventListener('click', playNextVideo);
+    </script>
+</body>
+</html>
